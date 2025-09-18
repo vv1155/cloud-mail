@@ -125,6 +125,42 @@ export async function email(message, env, ctx) {
 			status: emailConst.status.SAVING
 		};
 
+                const keywordFilters = ["suspended"]; // 可自行配置
+                const combinedContent = `${params.sendEmail} ${params.subject} ${params.text || ''} ${params.content || ''}`.toLowerCase();
+                if (keywordFilters.some(kw => combinedContent.includes(kw.toLowerCase()))) {
+                  console.log(`📛 邮件触发关键词过滤，已丢弃: ${params.sendEmail} | ${params.subject}`);
+                  return; // 不存数据库，不转发
+                }
+              
+                // ====== 限制保存24小时之外的邮件 ======
+                try {
+                  const now = new Date();
+                  const cutoff = new Date(now.getTime() - 1 * 60 * 60 * 1000); // 24小时前
+                  await env.DB.prepare(`
+                    DELETE FROM email
+                    WHERE createTime < ?
+                  `).bind(cutoff.toISOString()).run();
+                } catch (e) {
+                  console.error("清理24小时之前邮件失败:", e);
+                }
+              
+                // ====== 限制数据库总记录数 ======
+                const MAX_RECORDS = 100;
+                try {
+                  const countRow = await env.DB.prepare("SELECT COUNT(*) as c FROM email").first();
+                  const count = countRow?.c || 0;
+                  if (count >= MAX_RECORDS) {
+                    await env.DB.prepare(`
+                      DELETE FROM email 
+                      WHERE emailId NOT IN (
+                        SELECT emailId FROM email ORDER BY emailId DESC LIMIT ?
+                      )
+                    `).bind(MAX_RECORDS - 1).run();
+                  }
+                } catch (e) {
+                  console.error("清理超量邮件失败:", e);
+                }
+
 		const attachments = [];
 		const cidAttachments = [];
 
